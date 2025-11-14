@@ -1,9 +1,11 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
+import PortfolioHome from './pages/PortfolioHome'
 import Login from './pages/Login'
 import Signup from './pages/Signup'
 import Chat from './pages/Chat'
 import ThreeBackground from './components/ThreeBackground'
+import { authAPI } from './services/api'
 import './App.css'
 
 function App() {
@@ -11,10 +13,25 @@ function App() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Check if user is logged in
+    // Check if user is logged in and validate token
     const token = localStorage.getItem('authToken')
-    setIsAuthenticated(!!token)
-    setLoading(false)
+    if (token) {
+      // Optionally validate token with backend
+      authAPI.getCurrentUser()
+        .then(() => {
+          setIsAuthenticated(true)
+        })
+        .catch(() => {
+          // Token invalid, clear it
+          authAPI.logout()
+          setIsAuthenticated(false)
+        })
+        .finally(() => {
+          setLoading(false)
+        })
+    } else {
+      setLoading(false)
+    }
   }, [])
 
   if (loading) {
@@ -27,32 +44,49 @@ function App() {
 
   return (
     <div className="app-shell">
-      <ThreeBackground />
-      <div className="app-content">
-        <Router>
-          <Routes>
-            <Route 
-              path="/login" 
-              element={
-                isAuthenticated ? <Navigate to="/chat" /> : <Login setIsAuthenticated={setIsAuthenticated} />
-              } 
-            />
-            <Route 
-              path="/signup" 
-              element={
-                isAuthenticated ? <Navigate to="/chat" /> : <Signup setIsAuthenticated={setIsAuthenticated} />
-              } 
-            />
-            <Route 
-              path="/chat" 
-              element={
-                isAuthenticated ? <Chat setIsAuthenticated={setIsAuthenticated} /> : <Navigate to="/login" />
-              } 
-            />
-            <Route path="/" element={<Navigate to={isAuthenticated ? "/chat" : "/login"} />} />
-          </Routes>
-        </Router>
-      </div>
+      <Router>
+        <Routes>
+          <Route 
+            path="/" 
+            element={
+              isAuthenticated ? <Navigate to="/chat" /> : <PortfolioHome />
+            } 
+          />
+          <Route 
+            path="/login" 
+            element={
+              isAuthenticated ? <Navigate to="/chat" /> : (
+                <div className="app-content">
+                  <ThreeBackground />
+                  <Login setIsAuthenticated={setIsAuthenticated} />
+                </div>
+              )
+            } 
+          />
+          <Route 
+            path="/signup" 
+            element={
+              isAuthenticated ? <Navigate to="/chat" /> : (
+                <div className="app-content">
+                  <ThreeBackground />
+                  <Signup setIsAuthenticated={setIsAuthenticated} />
+                </div>
+              )
+            } 
+          />
+          <Route 
+            path="/chat" 
+            element={
+              isAuthenticated ? (
+                <div className="app-content">
+                  <ThreeBackground />
+                  <Chat setIsAuthenticated={setIsAuthenticated} />
+                </div>
+              ) : <Navigate to="/" />
+            } 
+          />
+        </Routes>
+      </Router>
     </div>
   )
 }

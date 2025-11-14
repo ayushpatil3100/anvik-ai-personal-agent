@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Brain, Mail, Lock } from 'lucide-react'
 import AuthShowcase from '../components/AuthShowcase'
+import { authAPI } from '../services/api'
 import './Auth.css'
 
 function Login({ setIsAuthenticated }) {
@@ -16,17 +17,30 @@ function Login({ setIsAuthenticated }) {
     setError('')
     setLoading(true)
 
-    // Simulate API call
-    setTimeout(() => {
-      if (email && password) {
-        localStorage.setItem('authToken', 'mock-token-' + Date.now())
-        setIsAuthenticated(true)
-        navigate('/chat')
-      } else {
+    try {
+      if (!email || !password) {
         setError('Please fill in all fields')
+        setLoading(false)
+        return
       }
+
+      const data = await authAPI.login(email, password)
+      setIsAuthenticated(true)
+      navigate('/chat')
+    } catch (err) {
+      // Show user-friendly error message
+      let errorMessage = err.message || 'Login failed. Please check your credentials.'
+      
+      // Check if it's a connection error
+      if (errorMessage.includes('Cannot connect to backend')) {
+        errorMessage = 'Cannot connect to backend server. Please ensure the backend is running on port 3000.'
+      }
+      
+      setError(errorMessage)
+      console.error('Login error:', err)
+    } finally {
       setLoading(false)
-    }, 500)
+    }
   }
 
   return (

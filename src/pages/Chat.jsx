@@ -16,19 +16,17 @@ import {
   XCircle,
   Loader2,
 } from 'lucide-react'
+import { chatAPI, memoryAPI, authAPI } from '../services/api'
 import './Chat.css'
-
-const BACKEND_URL = (import.meta.env?.VITE_BACKEND_URL || '').replace(/\/+$/, '')
 
 function Chat({ setIsAuthenticated }) {
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [chatHistory, setChatHistory] = useState([
-    { id: 1, title: 'New Chat', messages: [] },
-  ])
-  const [activeChatId, setActiveChatId] = useState(1)
+  const [chatHistory, setChatHistory] = useState([])
+  const [activeChatId, setActiveChatId] = useState(null)
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState([])
   const [isLoading, setIsLoading] = useState(false)
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true)
   const [attachedFiles, setAttachedFiles] = useState([])
   const [uploadingFiles, setUploadingFiles] = useState({}) // Track PDF upload status
   const messagesEndRef = useRef(null)
@@ -37,65 +35,103 @@ function Chat({ setIsAuthenticated }) {
 
   const activeChat = chatHistory.find((chat) => chat.id === activeChatId)
 
+  // Load chat history from backend on mount
+  useEffect(() => {
+    loadChatHistory()
+  }, [])
+
+  // Update messages when active chat changes
   useEffect(() => {
     if (activeChat) {
       setMessages(activeChat.messages || [])
+    } else {
+      setMessages([])
     }
   }, [activeChatId, activeChat])
 
+  // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  // Load chat history from backend
+  const loadChatHistory = async () => {
+    setIsLoadingHistory(true)
+    try {
+      const data = await chatAPI.getChatHistory()
+      const chats = data.chats || []
+      
+      // Transform backend chat format to frontend format
+      const transformedChats = chats.map((chat) => ({
+        id: chat.id || chat._id,
+        title: chat.title || 'New Chat',
+        messages: chat.messages || [],
+        createdAt: chat.createdAt,
+      }))
+
+      setChatHistory(transformedChats)
+      
+      // Set active chat to first one, or create new if none exist
+      if (transformedChats.length > 0) {
+        setActiveChatId(transformedChats[0].id)
+      } else {
+        createNewChat()
+      }
+    } catch (error) {
+      console.error('Failed to load chat history:', error)
+      // If error, create a new chat
+      createNewChat()
+    } finally {
+      setIsLoadingHistory(false)
+    }
+  }
+
   const handleLogout = () => {
-    localStorage.removeItem('authToken')
+    authAPI.logout()
     setIsAuthenticated(false)
     navigate('/login')
   }
 
   const createNewChat = () => {
     const newChat = {
-      id: Date.now(),
+      id: `temp-${Date.now()}`, // Temporary ID until saved to backend
       title: 'New Chat',
-      messages: []
+      messages: [],
+      isNew: true, // Flag to indicate it hasn't been saved yet
     }
     setChatHistory([newChat, ...chatHistory])
     setActiveChatId(newChat.id)
     setMessages([])
   }
 
-  const deleteChat = (chatId, e) => {
+  const deleteChat = async (chatId, e) => {
     e.stopPropagation()
+    
+    // Don't delete temporary chats from backend
+    if (!chatId.toString().startsWith('temp-')) {
+      try {
+        await chatAPI.deleteChat(chatId)
+      } catch (error) {
+        console.error('Failed to delete chat from backend:', error)
+        // Continue with local deletion even if backend fails
+      }
+    }
+
     const updatedHistory = chatHistory.filter((chat) => chat.id !== chatId)
     setChatHistory(updatedHistory)
-    if (chatId === activeChatId && updatedHistory.length > 0) {
-      setActiveChatId(updatedHistory[0].id)
-    } else if (updatedHistory.length === 0) {
-      createNewChat()
+    
+    if (chatId === activeChatId) {
+      if (updatedHistory.length > 0) {
+        setActiveChatId(updatedHistory[0].id)
+      } else {
+        createNewChat()
+      }
     }
   }
 
   const uploadPDFToBackend = async (file) => {
-    if (!BACKEND_URL) {
-      console.error('BACKEND_URL is not set. Cannot upload PDF.')
-      return { success: false, error: 'Backend URL not configured' }
-    }
-
-    const formData = new FormData()
-    formData.append('file', file)
-
     try {
-      const response = await fetch(`${BACKEND_URL}/api/memory/newdoc`, {
-        method: 'POST',
-        body: formData,
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Upload failed: ${response.status} ${errorText}`)
-      }
-
-      const data = await response.json()
+      const data = await memoryAPI.uploadDocument(file)
       return { success: true, data }
     } catch (error) {
       console.error('Error uploading PDF:', error)
@@ -171,37 +207,42 @@ function Chat({ setIsAuthenticated }) {
       updateChatTitle(activeChatId, title)
     }
 
-    let assistantReply =
-      BACKEND_URL === ''
-        ? `BACKEND_URL is not set. Unable to contact AI backend for "${prompt}".`
-        : 'Thinking...'
+    // Update local chat history immediately for better UX
+    updateChatMessages(activeChatId, newMessages)
 
-    if (BACKEND_URL) {
-      try {
-        const response = await fetch(`${BACKEND_URL}/api/ai/`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            prompt,
-            history: newMessages.slice(-20).map((msg) => ({
-              role: msg.role,
-              content: msg.content,
-            })),
-            files: attachedFiles.map((file) => ({ name: file.name, size: file.size })),
-          }),
-        })
+    let assistantReply = 'Thinking...'
 
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const data = await response.json()
-        assistantReply = data?.reply || data?.message || 'No response from server.'
-      } catch (error) {
-        console.error('AI request failed:', error)
-        assistantReply = 'Something went wrong while contacting the AI service. Please retry.'
+    try {
+      // Send message to backend
+      const data = await chatAPI.sendMessage(
+        prompt,
+        newMessages,
+        attachedFiles
+      )
+      assistantReply = data?.reply || data?.message || data?.response || 'No response from server.'
+      
+      // If this is a new chat and backend returns a chat ID, update it
+      if (activeChat && activeChat.isNew && data.chatId) {
+        // Replace temporary ID with backend ID
+        setChatHistory(prevHistory => 
+          prevHistory.map(chat => 
+            chat.id === activeChatId 
+              ? { ...chat, id: data.chatId, isNew: false }
+              : chat
+          )
+        )
+        setActiveChatId(data.chatId)
+      }
+    } catch (error) {
+      console.error('AI request failed:', error)
+      assistantReply = error.message || 'Something went wrong while contacting the AI service. Please retry.'
+      
+      // Check if it's an authentication error
+      if (error.message.includes('401') || error.message.includes('Unauthorized')) {
+        authAPI.logout()
+        setIsAuthenticated(false)
+        navigate('/login')
+        return
       }
     }
 
@@ -263,24 +304,39 @@ function Chat({ setIsAuthenticated }) {
           <div className="history-header">
             <span>Recent</span>
           </div>
-          <div className="history-list">
-            {chatHistory.map((chat) => (
-              <div
-                key={chat.id}
-                className={`history-item ${activeChatId === chat.id ? 'active' : ''}`}
-                onClick={() => setActiveChatId(chat.id)}
-              >
-                <MessageSquare size={16} />
-                <span className="history-title">{chat.title}</span>
-                <button
-                  className="history-delete"
-                  onClick={(e) => deleteChat(chat.id, e)}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
+          {isLoadingHistory ? (
+            <div className="history-loading">
+              <Loader2 size={16} className="spinning" />
+              <span>Loading chats...</span>
+            </div>
+          ) : (
+            <div className="history-list">
+              {chatHistory.length === 0 ? (
+                <div className="history-empty">
+                  <p>No chats yet</p>
+                  <p className="history-empty-hint">Start a new conversation</p>
+                </div>
+              ) : (
+                chatHistory.map((chat) => (
+                  <div
+                    key={chat.id}
+                    className={`history-item ${activeChatId === chat.id ? 'active' : ''}`}
+                    onClick={() => setActiveChatId(chat.id)}
+                  >
+                    <MessageSquare size={16} />
+                    <span className="history-title">{chat.title}</span>
+                    <button
+                      className="history-delete"
+                      onClick={(e) => deleteChat(chat.id, e)}
+                      title="Delete chat"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
         </div>
 
         <div className="sidebar-footer">
